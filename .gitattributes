@@ -1,0 +1,4 @@
+# Forzar LF en scripts para que no se rompan al clonar en Windows.
+*.sh     text eol=lf
+*.cypher text eol=lf
+*.py     text eol=lf

@@ -1,0 +1,16 @@
+# Clon de PokeAPI: lo descarga run.py (~48M), no se versiona.
+pokeapi/
+
+# Staging temporal que usa la carga.
+pipeline/import/
+
+# Entornos y caches de Python.
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Artefactos regenerables (el reporte.ipynb y reporte.pdf si se versionan).
+analysis/img/
+analysis/reporte.html
