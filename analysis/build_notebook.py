@@ -20,8 +20,11 @@ Pokemon, 177 tablas CSV) modelado como **grafo de propiedades** y cargado en **N
 
 ## Motivacion
 
-PokeAPI es una fuente rica y multi-relacional. La elegimos porque cumple el criterio
-duro del enunciado (ser una red *interesante*) en tres frentes verificados empiricamente:
+Queremos entender la estructura del universo Pokemon como red: como se ramifican las
+evoluciones, como la crianza conecta especies, y si el balance de tipos esconde ciclos de
+ventaja en vez de un tipo dominante. PokeAPI deja atacar eso como grafo, y de paso cumple el
+criterio del enunciado (ser una red *interesante*) en tres frentes que verificamos sobre los
+datos:
 
 1. **Ciclos**: la efectividad de tipos es un grafo dirigido con ciclos reales
    (p.ej. `fighting -> ice -> flying -> fighting`) y self-loops (`ghost`, `dragon`).
@@ -34,6 +37,28 @@ El grafo final tiene del orden de **130 mil nodos** y **900 mil aristas**, domin
 la relacion `CAN_LEARN` (que movimientos puede aprender cada Pokemon), que ademas es un
 **multigrafo con propiedades en la arista** (el caso canonico donde un grafo de
 propiedades supera a RDF puro).
+""")
+
+md("""## Preguntas de investigacion
+
+Antes de implementar definimos que queriamos averiguar de la red. Estas son las preguntas y la
+capacidad de grafo que cada una explota; las consultas P1-P9 (seccion 3) y los dos modelos
+(seccion 4) las responden.
+
+1. **P1** Existen ciclos de super-efectividad entre tipos, o hay un tipo que le gana a todos? (ciclos dirigidos)
+2. **P2** Cuales son los linajes evolutivos completos y cual es el mas largo? (paths recursivos)
+3. **P3** Bajo que condiciones evoluciona Eevee a cada una de sus formas? (relacion n-aria reificada)
+4. **P4** En que comunidades naturales agrupa la crianza por egg groups? (deteccion de comunidades)
+5. **P5** Que especies actuan como puente entre esas comunidades de crianza? (betweenness)
+6. **P6** Que tipo es ofensivamente mas central, propagando ventaja por toda la cadena? (PageRank ponderado)
+7. **P7** Que par de Pokemon comparte mas movimientos aprendibles? (proyeccion N-a-N del multigrafo)
+8. **P8** Que areas concentran mas biodiversidad de especies? (agregacion sobre encuentros reificados)
+9. **P9** En que linaje se gana mas poder de la forma base a la final? (recursion + agregacion sobre el path)
+
+Y dos preguntas para el ML basico:
+
+- **ML-1** El fenotipo de un Pokemon (stats y repertorio de movimientos) basta para predecir su tipo, o el tipo es una etiqueta de diseno sin senal fenotipica?
+- **ML-2** Se puede predecir si dos especies pueden criar mirando solo su fenotipo, sin conocer el egg group? Y cuanto de esa prediccion es nada mas la estructura del grafo?
 """)
 
 md("""## Setup
@@ -121,18 +146,24 @@ MATCH (s:Species {identifier:'pikachu'})-[:HAS_NAME]->(n:Name)
 RETURN n.lang AS lang_id, n.text AS nombre ORDER BY n.lang
 \"\"\")""")
 
-md("""## 3. Consultas GQL (P1-P9)
+md("""## 3. Las consultas que responden P1-P9
 
-Nueve consultas que explotan capacidades de grafo (ciclos, paths variables, comunidades,
-centralidad) y que un `SELECT/JOIN` no resuelve limpio.
+Cada consulta plantea su pregunta y la responde con una capacidad de grafo que un `SELECT/JOIN`
+no resuelve limpio. Despues de cada resultado va una lectura corta.
 
-### P1 - Ciclos en el type chart (super-efectividad)""")
+### P1 - ¿La super-efectividad de tipos forma ciclos, o hay un tipo invencible?
+Ciclos dirigidos de largo 3 en el subgrafo de super-efectividad.""")
 code("""q(\"\"\"
 MATCH path = (t:Type)-[:SUPER_EFFECTIVE*3]->(t)
 RETURN [n IN nodes(path) | n.identifier] AS ciclo LIMIT 10
 \"\"\")""")
 
-md("""### P2 - Linajes evolutivos completos (recursion)""")
+md("""La super-efectividad no es un orden lineal: aparecen varias triadas ciclicas
+(`fighting -> steel -> fairy -> fighting` y otras), asi que ningun tipo le gana a todos.
+Ademas `ghost` y `dragon` salen como self-loops, fuertes contra si mismos.""")
+
+md("""### P2 - ¿Cuales son los linajes evolutivos completos y cual es el mas largo?
+Path variable de la raiz a la hoja sobre EVOLVES_TO.""")
 code("""q(\"\"\"
 MATCH p = (raiz:Species)-[:EVOLVES_TO*]->(hoja:Species)
 WHERE NOT (:Species)-[:EVOLVES_TO]->(raiz) AND NOT (hoja)-[:EVOLVES_TO]->(:Species)
@@ -140,9 +171,12 @@ RETURN [n IN nodes(p) | n.identifier] AS linaje, length(p) AS saltos
 ORDER BY saltos DESC, linaje LIMIT 10
 \"\"\")""")
 
-md("""### P3 - Condiciones de cada evolucion de Eevee (reificadas como nodos)
+md("""Los linajes mas largos tienen 3 especies, o sea 2 saltos, como `bulbasaur -> ivysaur ->
+venusaur`. La evolucion es recursiva pero poco profunda: ninguna cadena pasa de 2 pasos.""")
+
+md("""### P3 - ¿Bajo que condiciones evoluciona Eevee a cada una de sus formas?
 Cada fila de evolucion es un nodo `EvolutionCondition`. Leafeon y Glaceon traen varias
-(piedra evolutiva o cercania a una roca), por eso se colectan todas en vez de quedarse con una.""")
+(piedra evolutiva o cercania a una roca), por eso se colectan todas.""")
 code("""q(\"\"\"
 MATCH (eevee:Species {identifier:'eevee'})-[:EVOLVES_TO]->(evo:Species)-[:EVOLVES_VIA]->(c:EvolutionCondition)
 RETURN evo.identifier AS evolucion,
@@ -151,7 +185,11 @@ RETURN evo.identifier AS evolucion,
 ORDER BY evolucion
 \"\"\")""")
 
-md("""### P4 - Comunidades de crianza (GDS Louvain)""")
+md("""Se ve el gatillo de cada Eeveelution: piedras (Vaporeon, Jolteon, Flareon), felicidad y
+hora del dia (Espeon de dia, Umbreon de noche), y Leafeon/Glaceon por piedra o por roca.""")
+
+md("""### P4 - ¿En que comunidades agrupa la crianza por egg groups?
+Louvain (GDS) sobre el grafo COMPATIBLE.""")
 code("""with driver.session() as s: s.run("CALL gds.graph.drop('breeding', false)")
 q("CALL gds.graph.project('breeding', 'Species', {COMPATIBLE: {orientation: 'UNDIRECTED'}})")
 q(\"\"\"
@@ -160,14 +198,22 @@ RETURN communityId, count(*) AS tam, collect(gds.util.asNode(nodeId).identifier)
 ORDER BY tam DESC LIMIT 10
 \"\"\")""")
 
-md("""### P5 - Especies puente en la crianza (GDS betweenness)""")
+md("""Las comunidades caen en familias tematicas (grupo campo, monstruo/agua, bicho, planta).
+Nidoqueen y Nidorina salen solas porque son del grupo no-eggs, que no cria.""")
+
+md("""### P5 - ¿Que especies actuan como puente entre comunidades de crianza?
+Betweenness (GDS) sobre la misma proyeccion de P4.""")
 code("""q(\"\"\"
 CALL gds.betweenness.stream('breeding') YIELD nodeId, score
 RETURN gds.util.asNode(nodeId).identifier AS especie, round(score) AS score
 ORDER BY score DESC LIMIT 10
 \"\"\")""")
 
-md("""### P6 - Centralidad ofensiva de tipos (GDS PageRank)""")
+md("""Las especies con mayor betweenness (cufant, fidough, copperajah...) son puentes:
+conectan comunidades de crianza que sin ellas quedarian separadas.""")
+
+md("""### P6 - ¿Que tipo es ofensivamente mas central en la cadena de efectividad?
+PageRank (GDS) ponderado por el factor de dano.""")
 code("""with driver.session() as s: s.run("CALL gds.graph.drop('typechart', false)")
 q("CALL gds.graph.project('typechart', 'Type', {EFFECTIVENESS: {properties: 'factor'}})")
 q(\"\"\"
@@ -176,8 +222,11 @@ RETURN gds.util.asNode(nodeId).identifier AS tipo, round(score*1000)/1000 AS sco
 ORDER BY score DESC LIMIT 8
 \"\"\")""")
 
-md("""### P7 - Pares de Pokemon con mas moves en comun (proyeccion N-a-N)
-Se deduplica el multigrafo a pares distintos antes del self-join.""")
+md("""Por PageRank ponderado, `ice`, `grass` y `rock` son los tipos ofensivamente mas
+centrales: su ventaja se propaga mas lejos por la cadena de efectividad.""")
+
+md("""### P7 - ¿Que par de Pokemon comparte mas movimientos aprendibles?
+Proyeccion N-a-N. Se deduplica el multigrafo a pares distintos antes del self-join.""")
 code("""q(\"\"\"
 MATCH (p:Pokemon)-[:CAN_LEARN]->(m:Move)
 WHERE p.is_default
@@ -190,27 +239,44 @@ RETURN a.identifier AS pokemon_a, b.identifier AS pokemon_b, comunes
 ORDER BY comunes DESC LIMIT 15
 \"\"\")""")
 
-md("""### P8 - Areas con mas biodiversidad (encuentros reificados)""")
+md("""El par con mas moves en comun es `mew`/`arceus` (164): los dos aprenden casi todo, lo
+que los vuelve hubs del grafo de movesets.""")
+
+md("""### P8 - ¿Que areas concentran mas biodiversidad de especies?
+Agregacion sobre los encuentros reificados. Si el area no tiene nombre propio se cae al de la
+Location padre.""")
 code("""q(\"\"\"
 MATCH (la:LocationArea)<-[:AT_AREA]-(:Encounter)<-[:HAS_ENCOUNTER]-(p:Pokemon)-[:IS_SPECIES]->(s:Species)
-WITH la, count(DISTINCT s) AS biodiversidad
-RETURN la.identifier AS area, biodiversidad ORDER BY biodiversidad DESC LIMIT 12
+OPTIONAL MATCH (la)-[:IN_LOCATION]->(loc:Location)
+WITH la, loc, count(DISTINCT s) AS biodiversidad
+RETURN coalesce(la.identifier, loc.identifier, toString(la.id)) AS area, biodiversidad
+ORDER BY biodiversidad DESC LIMIT 12
 \"\"\")""")
 
-md("""### P9 - Salto de stats en cada paso evolutivo (recursion + agregacion)""")
+md("""Las areas mas biodiversas (`kanto-route-13`, `elite-four-defeated`) concentran cerca de
+45 especies distintas.""")
+
+md("""### P9 - ¿En que linaje se gana mas poder de la forma base a la final?
+Recursion sobre el path completo raiz-a-hoja (`EVOLVES_TO*`) mas agregacion de la ganancia de stats.""")
 code("""q(\"\"\"
-MATCH (a:Species)-[:EVOLVES_TO]->(b:Species)
-MATCH (pa:Pokemon {is_default:true})-[:IS_SPECIES]->(a)
-MATCH (pb:Pokemon {is_default:true})-[:IS_SPECIES]->(b)
-MATCH (pa)-[s1:HAS_STAT]->(st:Stat)<-[s2:HAS_STAT]-(pb)
-WITH a.identifier AS de, b.identifier AS hacia, sum(s2.base_stat - s1.base_stat) AS delta
-RETURN de, hacia, delta ORDER BY delta DESC LIMIT 12
+MATCH path = (raiz:Species)-[:EVOLVES_TO*]->(hoja:Species)
+WHERE NOT (:Species)-[:EVOLVES_TO]->(raiz) AND NOT (hoja)-[:EVOLVES_TO]->(:Species)
+MATCH (pr:Pokemon {is_default:true})-[:IS_SPECIES]->(raiz)
+MATCH (ph:Pokemon {is_default:true})-[:IS_SPECIES]->(hoja)
+MATCH (pr)-[r1:HAS_STAT]->(s:Stat)<-[r2:HAS_STAT]-(ph)
+WITH [n IN nodes(path) | n.identifier] AS linaje, length(path) AS pasos,
+     sum(r2.base_stat - r1.base_stat) AS ganancia
+RETURN linaje, pasos, ganancia ORDER BY ganancia DESC LIMIT 12
 \"\"\")""")
+
+md("""El mayor salto de poder en un linaje completo es `cosmog -> cosmoem -> lunala`/`solgaleo`
+(+480), seguido de `slakoth -> slaking` (+390). En un solo paso, `magikarp -> gyarados` y
+`feebas -> milotic` (+340) son los que mas suben.""")
 
 md("""## 4. Machine Learning basico
 
-### 4.1 Clasificacion de tipo primario
-Predecir el tipo primario (18 clases) desde 6 stats base + conteo de moves por tipo.
+### 4.1 - ML-1: ¿el fenotipo basta para predecir el tipo?
+Predecir el tipo primario (18 clases) desde las 6 stats base mas el conteo de moves por tipo.
 """)
 code("""from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_score, StratifiedKFold
@@ -243,7 +309,7 @@ pokemon de fuego aprende muchos moves de fuego (efecto STAB), asi que predecir e
 movepool es en parte circular. La senal es real pero la tarea es mas facil de lo que el numero sugiere.
 """)
 
-md("""### 4.2 Link prediction de compatibilidad de crianza
+md("""### 4.2 - ML-2: ¿se puede predecir la crianza desde el fenotipo?
 Dos encuadres. (a) **Topologico**: con features de vecindario el AUC es ~1.0, pero esto es
 **estructural** (COMPATIBLE es una union de cliques solapadas, una por egg group),
 no un logro del modelo. (b) **Por atributos fenotipicos** (stats, tipo, generacion): la tarea

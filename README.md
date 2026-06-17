@@ -11,6 +11,24 @@ mismos como `ghost` y `dragon`); la evolucion es recursiva, porque la self-FK
 `evolves_from_species_id` apunta al pre-evolutivo; y la crianza por egg groups termina conectando
 873 especies en un solo componente de 71.232 aristas para navegar.
 
+## Preguntas que queremos responder
+
+Las consultas P1-P9 (en `pipeline/queries.cypher`) y los dos modelos de ML responden estas
+preguntas sobre la red:
+
+1. ¿La super-efectividad de tipos forma ciclos, o hay un tipo que le gana a todos?
+2. ¿Cuales son los linajes evolutivos completos y cual es el mas largo?
+3. ¿Bajo que condiciones evoluciona Eevee a cada una de sus formas?
+4. ¿En que comunidades agrupa la crianza por egg groups?
+5. ¿Que especies actuan como puente entre esas comunidades?
+6. ¿Que tipo es ofensivamente mas central en la cadena de efectividad?
+7. ¿Que par de Pokemon comparte mas movimientos aprendibles?
+8. ¿Que areas concentran mas biodiversidad de especies?
+9. ¿En que linaje se gana mas poder de la forma base a la final?
+
+Y para el ML basico: ¿el fenotipo (stats y movimientos) basta para predecir el tipo de un
+Pokemon? y ¿se puede predecir la compatibilidad de crianza desde el fenotipo, sin el egg group?
+
 ## Requisitos
 
 - **Docker Desktop** (Windows, macOS o Linux). Tiene que estar abierto.
