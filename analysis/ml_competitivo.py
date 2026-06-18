@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from neo4j import GraphDatabase
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_predict, StratifiedKFold, train_test_split
-from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve
+from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve, precision_recall_curve
 
 
 def oof_proba(X, y, seed=42):
@@ -46,6 +46,13 @@ def auc_cv(X, y, seed=42):
     proba = cross_val_predict(clf, X, y, cv=StratifiedKFold(5, shuffle=True, random_state=seed),
                               method="predict_proba")[:, 1]
     return roc_auc_score(y, proba), average_precision_score(y, proba)
+
+
+def auc_ci(X, y, seeds=range(10)):
+    """AUC y PR-AUC out-of-fold promediados sobre varias semillas -> (AUC_media, AUC_std, PR_media).
+    El intervalo distingue una mejora real de ruido de una sola particion."""
+    res = [auc_cv(X, y, seed=k) for k in seeds]
+    return float(np.mean([a for a, _ in res])), float(np.std([a for a, _ in res])), float(np.mean([p for _, p in res]))
 
 
 # ============================================================
@@ -90,10 +97,14 @@ OPTIONAL MATCH (pt)-[:SUPER_EFFECTIVE]->(d:Type)
 RETURN p.id AS id, count(DISTINCT d) AS stab_cov
 """).set_index("id")
 
+# Label a nivel de ESPECIE: viable en OU si CUALQUIER de sus formas se usa. Smogon empareja formas
+# no-default que son staples reales (landorus-therian, urshifu, ogerpon, formas hisui), y marcar solo
+# la forma default dejaba ~23 especies viables del lado negativo, inyectando falsos negativos duros.
 label = df("""
-MATCH (p:Pokemon {is_default:true})
-OPTIONAL MATCH (p)-[u:USED_IN]->(:Format {tier:'gen9ou'})
-RETURN p.id AS id, CASE WHEN u IS NULL THEN 0 ELSE 1 END AS in_ou
+MATCH (p:Pokemon {is_default:true})-[:IS_SPECIES]->(sp:Species)
+RETURN p.id AS id,
+       CASE WHEN EXISTS { (sp)<-[:IS_SPECIES]-(:Pokemon)-[:USED_IN]->(:Format {tier:'gen9ou'}) }
+            THEN 1 ELSE 0 END AS in_ou
 """).set_index("id")
 
 D = stats.join([meta, match, stab, label], how="inner").fillna(0)
@@ -115,30 +126,38 @@ print(f"  + features de grafo:       AUC={af:.3f}  AP={apf:.3f}")
 hard = D[(D.in_ou == 1) | ((D.fully_evolved == 1) & (D.legendary == 0) & (D.mythical == 0))]
 yh = hard["in_ou"].astype(int)
 print(f"\n-- Negativos DIFICILES (fully-evolved no-legendarios): {len(hard)} pokemon, {yh.sum()} en OU --")
-abh, aph = auc_cv(hard[base_cols], yh)
-afh, apfh = auc_cv(hard[full_cols], yh)
-print(f"  baseline (BST+legendario): AUC={abh:.3f}  AP={aph:.3f}")
-print(f"  + features de grafo:       AUC={afh:.3f}  AP={apfh:.3f}")
+# AUC y PR-AUC out-of-fold promediados sobre 10 semillas (media +/- desviacion). El intervalo dice si
+# el salto baseline -> grafo es real o ruido de una sola particion. PR-AUC es la metrica honesta con
+# desbalance; ROC-AUC tiende a ser optimista cuando los positivos son minoria.
+mb, sb, pb = auc_ci(hard[base_cols], yh)
+mf, sf, pf = auc_ci(hard[full_cols], yh)
+print(f"  baseline (BST+legendario): AUC={mb:.3f}+/-{sb:.3f}  PR-AUC={pb:.3f}")
+print(f"  + features de grafo:       AUC={mf:.3f}+/-{sf:.3f}  PR-AUC={pf:.3f}  (delta AUC={mf-mb:+.3f})")
 
 clf = RandomForestClassifier(n_estimators=400, class_weight="balanced", random_state=42, n_jobs=-1).fit(hard[full_cols], yh)
 imp = pd.Series(clf.feature_importances_, index=full_cols).sort_values(ascending=False)
 print("  top 6 features:", ", ".join(f"{k}={v:.2f}" for k, v in imp.head(6).items()))
 
-# CONTROL DE FUGA: con el label shuffleado el AUC debe colapsar a ~0.5; si no, hay fuga.
-# Se promedian 5 shuffles para una estimacion estable del nulo (un solo shuffle tiene varianza).
+# CONTROL DE FUGA: con el label shuffleado el AUC debe colapsar a ~0.5; si no, hay fuga del label.
+# (Detecta fuga label-en-feature; aqui las features son atributos del nodo, no de vecindario, asi que
+# no hay fuga topologica train/test que ocultar.) Se promedian 5 shuffles.
 nulos = [roc_auc_score(perm, oof_proba(hard[full_cols], perm, seed=k))
          for k in range(5) for perm in [pd.Series(np.random.default_rng(k).permutation(yh.values), index=yh.index)]]
 print(f"  control de fuga (5 labels shuffleados): AUC medio={np.mean(nulos):.3f}  (debe ser ~0.5)")
-print("  lectura: el grafo sube ~9 pts de AUC sobre el baseline entre mons comparables, y el shuffle")
-print("  confirma que esa senal es real (no fuga). AUC medido out-of-fold, no sobre el train.")
+print(f"  lectura: el grafo sube {mf-mb:+.3f} de AUC sobre el baseline entre mons comparables, y el")
+print("  shuffle confirma que esa señal es real (no fuga). AUC medido out-of-fold, no sobre el train.")
 
-plt.figure(figsize=(6, 5))
+fig, ax = plt.subplots(1, 2, figsize=(12, 5))
 for cols, lab, c in [(base_cols, "baseline (BST+leg.)", "#8172b3"), (full_cols, "+ features de grafo", "#c44e52")]:
     pr = oof_proba(hard[cols], yh)
-    fpr, tpr, _ = roc_curve(yh, pr)
-    plt.plot(fpr, tpr, color=c, label=f"{lab}: AUC={roc_auc_score(yh, pr):.3f}")
-plt.plot([0, 1], [0, 1], "--", color="gray"); plt.legend(loc="lower right")
-plt.xlabel("FPR"); plt.ylabel("TPR"); plt.title("Viabilidad OU: baseline vs grafo (negativos dificiles)")
+    fpr, tpr, _ = roc_curve(yh, pr); prec, rec, _ = precision_recall_curve(yh, pr)
+    ax[0].plot(fpr, tpr, color=c, label=f"{lab}: AUC={roc_auc_score(yh, pr):.3f}")
+    ax[1].plot(rec, prec, color=c, label=f"{lab}: PR-AUC={average_precision_score(yh, pr):.3f}")
+ax[0].plot([0, 1], [0, 1], "--", color="gray"); ax[0].legend(loc="lower right")
+ax[0].set_xlabel("FPR"); ax[0].set_ylabel("TPR"); ax[0].set_title("ROC (negativos dificiles)")
+ax[1].axhline(yh.mean(), ls="--", color="gray", label=f"prevalencia={yh.mean():.2f}")
+ax[1].legend(loc="upper right"); ax[1].set_xlabel("recall"); ax[1].set_ylabel("precision")
+ax[1].set_title("Precision-Recall (la honesta con desbalance)")
 plt.tight_layout(); plt.savefig(f"{IMG}/viability_roc.png", dpi=110); plt.close()
 plt.figure(figsize=(7, 4)); imp.head(10)[::-1].plot.barh(color="#55a868")
 plt.title("Importancia de features (viabilidad OU)"); plt.tight_layout()
@@ -160,7 +179,9 @@ RETURN p.id AS id, u.usage AS usage
 nodes = sorted(usage.keys())
 nodeset = set(nodes)
 
-# perfil de debilidades/resistencias por mon OU (para complementariedad de tipos)
+# perfil de debilidades/resistencias por mon OU (para complementariedad de tipos). Aqui 'resist'
+# incluye las inmunidades (mult=0): para complementarse, que un compañero sea inmune a tu debilidad
+# es la mejor cobertura posible. (En la parte A, weak/resist/immune van como features separadas.)
 prof = df("""
 MATCH (p:Pokemon)-[:USED_IN]->(:Format {tier:'gen9ou'})
 MATCH (p)-[:HAS_TYPE]->(def:Type)
@@ -177,9 +198,8 @@ resist = {r.id: set(r.resist) for r in prof.itertuples()}
 
 edge_set = {(min(a, b), max(a, b)) for a, b in zip(tm.a, tm.b) if a in nodeset and b in nodeset}
 pos = np.array(list(edge_set))
-adj = {n: set() for n in nodes}
-for a, b in edge_set:
-    adj[a].add(b); adj[b].add(a)
+nl = np.array(nodes)
+
 
 def complement(u, v):
     wu, wv, ru, rv = weak.get(u, set()), weak.get(v, set()), resist.get(u, set()), resist.get(v, set())
@@ -187,7 +207,19 @@ def complement(u, v):
     cv = len(wv & ru) / len(wv) if wv else 1.0
     return (cu + cv) / 2
 
-def feats(pairs):
+
+def neg_sample(k, rng):
+    """k pares no-arista, excluyendo contra TODAS las positivas (no solo train)."""
+    out = set()
+    while len(out) < k:
+        u, v = rng.choice(nl, 2, replace=False)
+        e = (int(min(u, v)), int(max(u, v)))
+        if e not in edge_set:
+            out.add(e)
+    return np.array(list(out))
+
+
+def feats(pairs, adj):
     rows = []
     for u, v in pairs:
         pop = usage.get(u, 0) * usage.get(v, 0)
@@ -195,43 +227,53 @@ def feats(pairs):
         rows.append([pop, complement(u, v), cn])
     return np.array(rows, dtype=float)
 
-# negativos: pares de OU que no son teammates
-def neg_sample(k):
-    out = set(); nl = np.array(nodes)
-    while len(out) < k:
-        u, v = RNG.choice(nl, 2, replace=False)
-        e = (int(min(u, v)), int(max(u, v)))
-        if e not in edge_set:
-            out.add(e)
-    return np.array(list(out))
-
-neg = neg_sample(len(pos))
-pos_tr, pos_te = train_test_split(pos, test_size=0.25, random_state=42)
-neg_tr, neg_te = train_test_split(neg, test_size=0.25, random_state=42)
-ytr = np.r_[np.ones(len(pos_tr)), np.zeros(len(neg_tr))]
-yte = np.r_[np.ones(len(pos_te)), np.zeros(len(neg_te))]
-Xtr, Xte = feats(np.vstack([pos_tr, neg_tr])), feats(np.vstack([pos_te, neg_te]))
-print(f"{len(nodes)} mons OU, {len(pos)} aristas teammate")
 
 cols = {"solo popularidad": [0], "solo complementariedad de tipos": [1],
         "popularidad + complementariedad": [0, 1], "todo (+ vecinos comunes)": [0, 1, 2]}
+
+
+def run_teammates(seed, want_curves=False):
+    """Un split honesto: la adyacencia para 'vecinos comunes' se arma SOLO con aristas de train.
+    Si se arma con todas (incluido test), el feature ve las aristas que tiene que predecir -> fuga."""
+    rng = np.random.default_rng(seed)
+    neg = neg_sample(len(pos), rng)
+    pos_tr, pos_te = train_test_split(pos, test_size=0.25, random_state=seed)
+    neg_tr, neg_te = train_test_split(neg, test_size=0.25, random_state=seed)
+    adj = {n: set() for n in nodes}
+    for a, b in pos_tr:
+        a, b = int(a), int(b)
+        adj[a].add(b); adj[b].add(a)
+    ytr = np.r_[np.ones(len(pos_tr)), np.zeros(len(neg_tr))]
+    yte = np.r_[np.ones(len(pos_te)), np.zeros(len(neg_te))]
+    Xtr = feats(np.vstack([pos_tr, neg_tr]), adj); Xte = feats(np.vstack([pos_te, neg_te]), adj)
+    out, curves = {}, {}
+    for nombre, idx in cols.items():
+        m = RandomForestClassifier(n_estimators=300, random_state=seed, n_jobs=-1).fit(Xtr[:, idx], ytr)
+        p = m.predict_proba(Xte[:, idx])[:, 1]
+        out[nombre] = roc_auc_score(yte, p)
+        if want_curves: curves[nombre] = roc_curve(yte, p)
+    msh = RandomForestClassifier(n_estimators=200, random_state=seed, n_jobs=-1).fit(Xtr, rng.permutation(ytr))
+    out["_nulo"] = roc_auc_score(yte, msh.predict_proba(Xte)[:, 1])
+    return (out, curves) if want_curves else out
+
+
+print(f"{len(nodes)} mons OU, {len(pos)} aristas teammate")
+res = [run_teammates(k) for k in range(10)]
+print("  AUC sobre holdout 75/25 (media +/- std de 10 splits, adyacencia solo-train):")
+for nombre in cols:
+    vals = [r[nombre] for r in res]
+    print(f"  {nombre:34s} AUC={np.mean(vals):.3f}+/-{np.std(vals):.3f}")
+print(f"  control de fuga (label shuffleado):        AUC={np.mean([r['_nulo'] for r in res]):.3f}  (debe ser ~0.5)")
+
+_, curves = run_teammates(42, want_curves=True)
 plt.figure(figsize=(6, 5))
-for nombre, idx in cols.items():
-    m = RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1).fit(Xtr[:, idx], ytr)
-    p = m.predict_proba(Xte[:, idx])[:, 1]
-    a = roc_auc_score(yte, p)
-    print(f"  {nombre:34s} AUC={a:.3f}")
-    fpr, tpr, _ = roc_curve(yte, p); plt.plot(fpr, tpr, label=f"{nombre}: {a:.3f}")
-nulos_tm = []
-for k in range(5):
-    msh = RandomForestClassifier(n_estimators=200, random_state=k, n_jobs=-1).fit(Xtr, np.random.default_rng(k).permutation(ytr))
-    nulos_tm.append(roc_auc_score(yte, msh.predict_proba(Xte)[:, 1]))
-print(f"  control de fuga (5 labels shuffleados): AUC medio={np.mean(nulos_tm):.3f}  (debe ser ~0.5)")
+for nombre, (fpr, tpr, _) in curves.items():
+    plt.plot(fpr, tpr, label=f"{nombre}: {np.mean([r[nombre] for r in res]):.3f}")
 plt.plot([0, 1], [0, 1], "--", color="gray"); plt.legend(fontsize=7, loc="lower right")
-plt.xlabel("FPR"); plt.ylabel("TPR"); plt.title("Teammates: que senal predice el co-uso real")
+plt.xlabel("FPR"); plt.ylabel("TPR"); plt.title("Teammates: que señal predice el co-uso real")
 plt.tight_layout(); plt.savefig(f"{IMG}/teammate_roc.png", dpi=110); plt.close()
-print("  lectura adversarial: la complementariedad de tipos sola (~0.55) apenas supera el azar y no")
-print("  mejora sobre popularidad; lo que predice el co-uso es la estructura de co-ocurrencia (vecinos).")
+print("  lectura adversarial: la complementariedad de tipos sola apenas supera el azar y no mejora")
+print("  sobre popularidad; lo que predice el co-uso es la co-ocurrencia (vecinos), ya sin fuga.")
 
 print(f"\nFiguras en {IMG}/")
 driver.close()

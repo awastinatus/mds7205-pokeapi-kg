@@ -37,7 +37,7 @@ print(deg["moves"].describe().round(1).to_string())
 plt.figure(figsize=(7, 4))
 plt.hist(deg["moves"], bins=40, color="#4c72b0")
 plt.xlabel("moves distintos aprendibles"); plt.ylabel("nro de pokemon")
-plt.title("Distribucion de tamano de movepool (formas default)")
+plt.title("Distribucion de tamaño de movepool (formas default)")
 plt.tight_layout(); plt.savefig(f"{IMG}/movepool_hist.png", dpi=110); plt.close()
 
 print("\n== Grafo de crianza (COMPATIBLE) via networkx ==")

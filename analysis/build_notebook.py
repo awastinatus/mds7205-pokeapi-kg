@@ -14,7 +14,7 @@ md("""# Proyecto MDS7205 - Grafo de Conocimiento sobre PokeAPI
 
 **Iniciativa de Datos e IA - Universidad de Chile**
 
-Este reporte tecnico documenta el diseno, implementacion, consulta y analisis de un
+Este reporte tecnico documenta el diseño, implementacion, consulta y analisis de un
 grafo de conocimiento construido sobre **PokeAPI** (el esquema relacional completo de
 Pokemon, 177 tablas CSV) modelado como **grafo de propiedades** y cargado en **Neo4j**.
 
@@ -57,7 +57,7 @@ capacidad de grafo que cada una explota; las consultas P1-P9 (seccion 3) y los d
 
 Y dos preguntas para el ML basico:
 
-- **ML-1** El fenotipo de un Pokemon (stats y repertorio de movimientos) basta para predecir su tipo, o el tipo es una etiqueta de diseno sin senal fenotipica?
+- **ML-1** El fenotipo de un Pokemon (stats y repertorio de movimientos) basta para predecir su tipo, o el tipo es una etiqueta de diseño sin señal fenotipica?
 - **ML-2** Se puede predecir si dos especies pueden criar mirando solo su fenotipo, sin conocer el egg group? Y cuanto de esa prediccion es nada mas la estructura del grafo?
 """)
 
@@ -99,7 +99,7 @@ print("TOTAL aristas:", f"{aristas['aristas'].sum():,}")""")
 
 md("""## 2. Caracterizacion del grafo (EDA)
 
-### 2.1 Distribucion del tamano de movepool
+### 2.1 Distribucion del tamaño de movepool
 Cuantos movimientos distintos puede aprender cada Pokemon (formas default).
 """)
 code("""deg = q(\"\"\"
@@ -110,7 +110,7 @@ print(deg["moves"].describe().round(1).to_string())
 plt.figure(figsize=(7,4))
 plt.hist(deg["moves"], bins=40, color="#4c72b0")
 plt.xlabel("moves distintos aprendibles"); plt.ylabel("nro de pokemon")
-plt.title("Distribucion de tamano de movepool"); plt.show()""")
+plt.title("Distribucion de tamaño de movepool"); plt.show()""")
 
 md("""### 2.2 Grafo de crianza (COMPATIBLE)
 Dos especies son compatibles si comparten un *egg group* (excluyendo ditto y no-eggs).
@@ -138,7 +138,54 @@ plt.xticks(rotation=60, ha="right"); plt.ylabel("nro de pokemon")
 plt.title("Pokemon por tipo primario"); plt.show()
 display(tipos.set_index("tipo").T)""")
 
-md("""### 2.4 Capa multilingue
+md("""### 2.4 Combinaciones de tipo (primario x secundario)
+La mitad de los Pokemon son de doble tipo. El mapa cruza el tipo del slot 1 contra el del slot 2
+(`(mono)` = sin segundo tipo) y deja ver que combinaciones existen y cuales se repiten.
+""")
+code("""tc = q(\"\"\"MATCH (p:Pokemon {is_default:true})-[h:HAS_TYPE]->(t:Type)
+RETURN p.id AS id, h.slot AS slot, t.identifier AS tipo\"\"\")
+piv = tc.pivot_table(index="id", columns="slot", values="tipo", aggfunc="first")
+piv.columns = ["t1", "t2"]; piv["t2"] = piv["t2"].fillna("(mono)")
+orden = tipos["tipo"].tolist(); cols = orden + ["(mono)"]
+cross = pd.crosstab(piv["t1"], piv["t2"]).reindex(index=orden, columns=cols, fill_value=0)
+fig, ax = plt.subplots(figsize=(10, 7))
+im = ax.imshow(cross.values, cmap="viridis", aspect="auto")
+ax.set_xticks(range(len(cols))); ax.set_xticklabels(cols, rotation=60, ha="right", fontsize=8)
+ax.set_yticks(range(len(orden))); ax.set_yticklabels(orden, fontsize=8)
+ax.set_xlabel("tipo secundario (slot 2)"); ax.set_ylabel("tipo primario (slot 1)")
+for i in range(len(orden)):
+    for j in range(len(cols)):
+        v = cross.values[i, j]
+        if v > 0: ax.text(j, i, int(v), ha="center", va="center", color="white", fontsize=6)
+fig.colorbar(im, label="nro de pokemon"); ax.set_title("Combinaciones de tipo")
+plt.tight_layout(); plt.show()
+print(f"monotipo: {(piv['t2']=='(mono)').sum()} | doble tipo: {(piv['t2']!='(mono)').sum()}")""")
+
+md("""### 2.5 Cuadro de efectividad de tipos
+El grafo dirigido `EFFECTIVENESS` completo (atacante hacia defensor). Rojo es super-efectivo (x2),
+verde resistido (x0.5), verde oscuro inmunidad (x0). Es el cuadro sobre el que P1 busca ciclos y P6
+mide centralidad ofensiva, asi que conviene tenerlo a la vista.
+""")
+code("""e = q(\"\"\"MATCH (a:Type)-[r:EFFECTIVENESS]->(b:Type)
+RETURN a.identifier AS atk, b.identifier AS def, r.factor AS f\"\"\")
+tt = sorted(set(e["atk"]) | set(e["def"]))
+M = pd.DataFrame(100.0, index=tt, columns=tt)
+for _, row in e.iterrows(): M.loc[row["atk"], row["def"]] = row["f"]
+M = M / 100.0
+fig, ax = plt.subplots(figsize=(9, 8))
+im = ax.imshow(M.values, cmap="RdYlGn_r", vmin=0, vmax=2)
+ax.set_xticks(range(len(tt))); ax.set_xticklabels(tt, rotation=60, ha="right", fontsize=7)
+ax.set_yticks(range(len(tt))); ax.set_yticklabels(tt, fontsize=7)
+ax.set_xlabel("defensor"); ax.set_ylabel("atacante")
+for i in range(len(tt)):
+    for j in range(len(tt)):
+        v = M.values[i, j]
+        if v != 1.0: ax.text(j, i, ("0" if v == 0 else f"{v:g}"), ha="center", va="center", fontsize=6)
+fig.colorbar(im, label="multiplicador"); ax.set_title("Cuadro de efectividad (atacante -> defensor)")
+plt.tight_layout(); plt.show()
+print(f"super-efectivo x2: {int((M.values==2).sum())} | resistido x0.5: {int((M.values==0.5).sum())} | inmunidad x0: {int((M.values==0).sum())}")""")
+
+md("""### 2.6 Capa multilingue
 Cada entidad tiene nombres en 11 idiomas como nodos `Name`. Ejemplo: Pikachu.
 """)
 code("""q(\"\"\"
@@ -160,7 +207,24 @@ RETURN [n IN nodes(path) | n.identifier] AS ciclo LIMIT 10
 
 md("""La super-efectividad no es un orden lineal: aparecen varias triadas ciclicas
 (`fighting -> steel -> fairy -> fighting` y otras), asi que ningun tipo le gana a todos.
-Ademas `ghost` y `dragon` salen como self-loops, fuertes contra si mismos.""")
+Ademas `ghost` y `dragon` salen como self-loops, fuertes contra si mismos.
+
+Visto como grafo dirigido se nota que no hay un tipo sumidero: en rojo va el ciclo
+`fighting -> steel -> fairy -> fighting`. El tamaño y color del nodo es su PageRank (la consulta P6),
+o sea cuan lejos propaga su ventaja ofensiva por la cadena.""")
+code("""ge = q("MATCH (a:Type)-[:SUPER_EFFECTIVE]->(b:Type) RETURN a.identifier AS s, b.identifier AS t")
+G = nx.from_pandas_edgelist(ge, "s", "t", create_using=nx.DiGraph)
+pr = nx.pagerank(G); posg = nx.circular_layout(G)
+ciclo = [("fighting","steel"),("steel","fairy"),("fairy","fighting")]
+plt.figure(figsize=(8,8))
+ns = [200 + 5000*pr[n] for n in G.nodes()]
+nx.draw_networkx_nodes(G, posg, node_size=ns, node_color=[pr[n] for n in G.nodes()], cmap="YlOrRd", edgecolors="#444", linewidths=0.5)
+nx.draw_networkx_edges(G, posg, edgelist=[e for e in G.edges() if e not in ciclo], edge_color="#d5d5d5", arrowsize=7, width=0.6, connectionstyle="arc3,rad=0.1", node_size=ns)
+nx.draw_networkx_edges(G, posg, edgelist=ciclo, edge_color="#c0392b", arrowsize=15, width=2.2, connectionstyle="arc3,rad=0.1", node_size=ns)
+nx.draw_networkx_labels(G, posg, font_size=9)
+top3 = sorted(pr, key=pr.get, reverse=True)[:3]
+plt.title("Tipos como grafo dirigido SUPER_EFFECTIVE (rojo: un ciclo de 3)\\nmas central por PageRank (P6): " + ", ".join(top3))
+plt.axis("off"); plt.tight_layout(); plt.show()""")
 
 md("""### P2 - ¿Cuales son los linajes evolutivos completos y cual es el mas largo?
 Path variable de la raiz a la hoja sobre EVOLVES_TO.""")
@@ -213,7 +277,7 @@ md("""Las especies con mayor betweenness (cufant, fidough, copperajah...) son pu
 conectan comunidades de crianza que sin ellas quedarian separadas.""")
 
 md("""### P6 - ¿Que tipo es ofensivamente mas central en la cadena de efectividad?
-PageRank (GDS) ponderado por el factor de dano.""")
+PageRank (GDS) ponderado por el factor de daño.""")
 code("""with driver.session() as s: s.run("CALL gds.graph.drop('typechart', false)")
 q("CALL gds.graph.project('typechart', 'Type', {EFFECTIVENESS: {properties: 'factor'}})")
 q(\"\"\"
@@ -270,7 +334,7 @@ RETURN linaje, pasos, ganancia ORDER BY ganancia DESC LIMIT 12
 \"\"\")""")
 
 md("""El mayor salto de poder en un linaje completo es `cosmog -> cosmoem -> lunala`/`solgaleo`
-(+480), seguido de `slakoth -> slaking` (+390). En un solo paso, `magikarp -> gyarados` y
+(+480), seguido de `slakoth -> vigoroth -> slaking` (+390). En un solo paso, `magikarp -> gyarados` y
 `feebas -> milotic` (+340) son los que mas suben.""")
 
 md("""## 4. Machine Learning basico
@@ -296,17 +360,22 @@ y = data["tipo"]; Xm = data.drop(columns="tipo")
 clf = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
 cv = StratifiedKFold(5, shuffle=True, random_state=42)
 scores = cross_val_score(clf, Xm, y, cv=cv)
+bal = cross_val_score(clf, Xm, y, cv=cv, scoring="balanced_accuracy")
+f1m = cross_val_score(clf, Xm, y, cv=cv, scoring="f1_macro")
 stat_cols = [c for c in Xm.columns if not c.startswith("mt_")]
 scores_stats = cross_val_score(clf, Xm[stat_cols], y, cv=cv)
 print(f"{Xm.shape[0]} pokemon, {Xm.shape[1]} features, {y.nunique()} clases")
 print(f"accuracy 5-fold CV: {scores.mean():.3f} +/- {scores.std():.3f}")
+print(f"balanced-accuracy: {bal.mean():.3f} | macro-F1: {f1m.mean():.3f}  (18 clases desbalanceadas)")
 print(f"baseline (clase mayoritaria): {y.value_counts(normalize=True).max():.3f}")
 print(f"accuracy solo con stats base: {scores_stats.mean():.3f}")""")
 
 md("""Hay que leer ese 0.82 con cuidado: se apoya casi entero en los conteos de moves por tipo.
 Con solo las 6 stats base la accuracy cae a ~0.20, apenas sobre el baseline. Tiene sentido, un
 pokemon de fuego aprende muchos moves de fuego (efecto STAB), asi que predecir el tipo desde el
-movepool es en parte circular. La senal es real pero la tarea es mas facil de lo que el numero sugiere.
+movepool es en parte circular. Con 18 clases desbalanceadas la accuracy plana engaña; la
+balanced-accuracy (~0.75) y el macro-F1 (~0.76) confirman que la señal reparte entre clases y es
+real, pero la tarea es mas facil de lo que el 0.82 sugiere.
 """)
 
 md("""### 4.2 - ML-2: ¿se puede predecir la crianza desde el fenotipo?
@@ -317,59 +386,58 @@ predictiva real, no trivial.
 """)
 code("""from sklearn.metrics import roc_auc_score, roc_curve, average_precision_score
 from sklearn.model_selection import train_test_split
-rng = np.random.default_rng(42)
 
-nodes = sorted(set(ed.a) | set(ed.b))
+nodes = sorted(set(ed.a) | set(ed.b)); nl = np.array(nodes)
 edge_set = {(min(a,b), max(a,b)) for a,b in zip(ed.a, ed.b)}
 pos = np.array(list(edge_set))
-pos_tr, pos_te = train_test_split(pos, test_size=0.2, random_state=42)
-adj = {n:set() for n in nodes}
-for a,b in pos_tr: adj[a].add(b); adj[b].add(a)
-
-def rand_neg(k):
-    out=set(); nl=np.array(nodes)
-    while len(out)<k:
-        u,v = rng.choice(nl,2,replace=False); e=(int(min(u,v)),int(max(u,v)))
-        if e not in edge_set: out.add(e)
-    return np.array(list(out))
-neg = rand_neg(len(pos)); neg_tr, neg_te = train_test_split(neg, test_size=0.2, random_state=42)
-ytr = np.r_[np.ones(len(pos_tr)), np.zeros(len(neg_tr))]
-yte = np.r_[np.ones(len(pos_te)), np.zeros(len(neg_te))]
-
-def topo(pairs):
-    r=[]
-    for u,v in pairs:
-        nu,nv=adj[u],adj[v]; cm=nu&nv; un=nu|nv
-        r.append([len(cm), len(cm)/len(un) if un else 0,
-                  sum(1/math.log(len(adj[w])) for w in cm if len(adj[w])>1), len(nu)*len(nv)])
-    return np.array(r,dtype=float)
-m1=RandomForestClassifier(n_estimators=300,random_state=42,n_jobs=-1).fit(np.vstack([topo(pos_tr),topo(neg_tr)]),ytr)
-p1=m1.predict_proba(np.vstack([topo(pos_te),topo(neg_te)]))[:,1]
-auc1=roc_auc_score(yte,p1)
-
 sf = q(\"\"\"MATCH (s:Species)<-[:IS_SPECIES]-(p:Pokemon {is_default:true})-[r:HAS_STAT]->(st:Stat)
 RETURN s.id AS sid, st.identifier AS stat, r.base_stat AS v\"\"\").pivot_table(index="sid",columns="stat",values="v",fill_value=0)
 sm = q(\"\"\"MATCH (s:Species) OPTIONAL MATCH (s)<-[:IS_SPECIES]-(:Pokemon {is_default:true})-[:HAS_TYPE {slot:1}]->(t:Type)
 RETURN s.id AS sid, s.generation_id AS gen, t.identifier AS ptype\"\"\").set_index("sid")
+def rand_neg(k, rng):
+    out=set()
+    while len(out)<k:
+        u,v=rng.choice(nl,2,replace=False); e=(int(min(u,v)),int(max(u,v)))
+        if e not in edge_set: out.add(e)
+    return np.array(list(out))
+def topo(pairs, adj, logdeg):   # vecindario sobre adyacencia de train (sin fuga); log(grado) precomputado
+    r=[]
+    for u,v in pairs:
+        nu,nv=adj[u],adj[v]; cm=nu&nv; cn=len(cm); un=len(nu)+len(nv)-cn
+        r.append([cn, cn/un if un else 0, sum(logdeg[w] for w in cm), len(nu)*len(nv)])
+    return np.array(r,dtype=float)
 def attr(pairs):
     r=[]
     for u,v in pairs:
-        if u not in sf.index or v not in sf.index: r.append([0.0]*(sf.shape[1]+2)); continue
         d=list(np.abs(sf.loc[u].values-sf.loc[v].values))
         st=1.0 if (pd.notna(sm.loc[u,'ptype']) and sm.loc[u,'ptype']==sm.loc[v,'ptype']) else 0.0
         sg=1.0 if sm.loc[u,'gen']==sm.loc[v,'gen'] else 0.0
         r.append(d+[st,sg])
     return np.array(r,dtype=float)
-m2=RandomForestClassifier(n_estimators=300,random_state=42,n_jobs=-1).fit(np.vstack([attr(pos_tr),attr(neg_tr)]),ytr)
-p2=m2.predict_proba(np.vstack([attr(pos_te),attr(neg_te)]))[:,1]
-auc2=roc_auc_score(yte,p2)
-print(f"2a) topologico (cliques solapadas): AUC={auc1:.3f}")
-print(f"2b) por atributos fenotipicos:     AUC={auc2:.3f}")
+def ev(seed):
+    rng=np.random.default_rng(seed)
+    ptr,pte=train_test_split(pos,test_size=0.2,random_state=seed)
+    adj={n:set() for n in nodes}
+    for a,b in ptr: a,b=int(a),int(b); adj[a].add(b); adj[b].add(a)
+    logdeg={w:1.0/math.log(dd) for w in adj if (dd:=len(adj[w]))>1}
+    neg=rand_neg(len(pos),rng); ntr,nte=train_test_split(neg,test_size=0.2,random_state=seed)
+    ytr=np.r_[np.ones(len(ptr)),np.zeros(len(ntr))]; yte=np.r_[np.ones(len(pte)),np.zeros(len(nte))]
+    o={}
+    for nombre,fz in [("topo",lambda P: topo(P,adj,logdeg)),("attr",attr)]:
+        m=RandomForestClassifier(300,random_state=seed,n_jobs=-1).fit(np.vstack([fz(ptr),fz(ntr)]),ytr)
+        p=m.predict_proba(np.vstack([fz(pte),fz(nte)]))[:,1]
+        o[nombre]=(roc_auc_score(yte,p),average_precision_score(yte,p),roc_curve(yte,p))
+    return o
+runs=[ev(k) for k in range(5)]   # 5 splits -> media+/-std; el AP esta sobre set balanceado 1:1 (base 0.5)
+def ms(key,i): return np.mean([r[key][i] for r in runs]),np.std([r[key][i] for r in runs])
+print(f"grafo crianza: {len(nodes)} especies, {len(pos)} pares compatibles")
+print(f"2a) topologico (CN/Jaccard/AA/PA): AUC={ms('topo',0)[0]:.3f}+/-{ms('topo',0)[1]:.3f}  AP={ms('topo',1)[0]:.3f} (1:1, base 0.5)")
+print(f"2b) por atributos fenotipicos:     AUC={ms('attr',0)[0]:.3f}+/-{ms('attr',0)[1]:.3f}  AP={ms('attr',1)[0]:.3f} (1:1, base 0.5)")
 plt.figure(figsize=(6,5))
-for p,a,l,c in [(p1,auc1,'topologico','#8172b3'),(p2,auc2,'atributos','#c44e52')]:
-    fpr,tpr,_=roc_curve(yte,p); plt.plot(fpr,tpr,color=c,label=f"{l}: AUC={a:.3f}")
+for nombre,l,c in [("topo","topologico (cliques solapadas)","#8172b3"),("attr","por atributos fenotipicos","#c44e52")]:
+    fpr,tpr,_=runs[0][nombre][2]; plt.plot(fpr,tpr,color=c,label=f"{l}: AUC={ms(nombre,0)[0]:.3f}")
 plt.plot([0,1],[0,1],'--',color='gray'); plt.legend(loc='lower right')
-plt.xlabel("FPR"); plt.ylabel("TPR"); plt.title("Link prediction crianza"); plt.show()""")
+plt.xlabel("FPR"); plt.ylabel("TPR"); plt.title("Link prediction crianza: topologia vs atributos"); plt.show()""")
 
 md("""## 5. Conclusiones
 
@@ -385,9 +453,9 @@ paths evolutivos, comunidades y centralidad de crianza, proyecciones N-a-N de mo
 Del ML salieron dos lecturas honestas. El grafo de crianza es una union de cliques solapadas (una
 por egg group), asi que predecir enlaces por topologia da AUC ~1.0, pero eso describe el grafo, no
 al modelo; preguntar lo no trivial, si dos especies pueden cruzarse mirando solo su fenotipo, baja
-a AUC ~0.67. Y la clasificacion de tipo llega a ~0.82, pero buena parte de esa senal es el movepool
-(efecto STAB): con solo las stats base cae a ~0.20. En ambos casos el numero vistoso esconde un
-matiz que vale mas que el numero.
+a AUC ~0.67. Y la clasificacion de tipo llega a ~0.82, pero buena parte de esa señal es el movepool
+(efecto STAB): con solo las stats base cae a ~0.20. Las dos cifras altas se caen apenas se controla
+por lo que de verdad las explica, asi que conviene leer la letra chica antes que el numero pelado.
 """)
 code("""driver.close()
 print("fin del reporte")""")

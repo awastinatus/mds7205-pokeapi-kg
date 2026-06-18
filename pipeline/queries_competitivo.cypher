@@ -57,8 +57,8 @@ WHERE ALL(tk IN T WHERE
       reduce(f=1.0, d IN cdefs | f * coalesce([(tk)-[e:EFFECTIVENESS]->(d) | e.factor/100.0][0], 1.0)) < 1.0)
 RETURN name AS amenaza, count(c) AS counters_por_tipos ORDER BY counters_por_tipos;
 
-// C5 - ¿Que Pokemon son revenge-killers? (lentos, ataque alto, con prioridad STAB de dano)
-// priority>=1 y power>0 (excluye silk-trap/burning-bulwark, prio alta pero sin dano).
+// C5 - ¿Que Pokemon son revenge-killers? (lentos, ataque alto, con prioridad STAB de daño)
+// priority>=1 y power>0 (excluye silk-trap/burning-bulwark, prio alta pero sin daño).
 MATCH (p:Pokemon)-[:CAN_LEARN]->(m:Move)-[:MOVE_TYPE]->(mt:Type)
 WHERE m.priority >= 1 AND m.power > 0 AND p.is_default
 MATCH (p)-[:HAS_TYPE]->(pt:Type) WHERE pt = mt
@@ -83,8 +83,9 @@ MATCH (pt)-[:SUPER_EFFECTIVE]->(def:Type)
 WITH p, collect(DISTINCT pt.identifier) AS tipos, count(DISTINCT def) AS cobertura_stab
 RETURN p.identifier AS pokemon, tipos, cobertura_stab ORDER BY cobertura_stab DESC LIMIT 15;
 
-// C8 - Calculadora de dano en Cypher (Lv100, 252 EV en el stat ofensivo, sin naturaleza).
-// Ej: Charizard Flamethrower vs Venusaur. El rango (rolls 0.85-1.0) coincide con el calc de Showdown.
+// C8 - Calculadora de daño en Cypher (Lv100, 252 EV en el stat ofensivo, sin naturaleza).
+// Ej: Charizard Flamethrower vs Venusaur da 208-246. El redondeo va por etapas (floor tras el roll,
+// pokeRound medio-arriba en el STAB, floor en la efectividad), igual que el calc oficial de Showdown.
 MATCH (atk:Pokemon {identifier:'charizard'})-[ha:HAS_STAT]->(:Stat {identifier:'special-attack'})
 MATCH (def:Pokemon {identifier:'venusaur'})-[hd:HAS_STAT]->(:Stat {identifier:'special-defense'})
 MATCH (m:Move {identifier:'flamethrower'})-[:MOVE_TYPE]->(mt:Type)
@@ -98,8 +99,8 @@ WITH m, stab, typeMult,
 WITH m.power AS power, stab, typeMult,
      toInteger(floor(floor(floor(42.0*m.power*A/toFloat(D)) / 50))) + 2 AS baseDmg
 RETURN power, stab, typeMult,
-       toInteger(floor(baseDmg*stab*typeMult*0.85)) AS dmg_min,
-       toInteger(floor(baseDmg*stab*typeMult*1.00)) AS dmg_max;
+       toInteger(floor(floor(toFloat(floor(baseDmg*0.85))*stab + 0.5)*typeMult)) AS dmg_min,
+       toInteger(floor(floor(toFloat(baseDmg)*stab + 0.5)*typeMult)) AS dmg_max;
 
 // C9 - Movepool legal por metodo en un version_group (legality). metodo: 1=level-up, 2=egg, 3=tutor, 4=TM.
 MATCH (p:Pokemon {identifier:'garchomp'})-[r:CAN_LEARN]->(m:Move)

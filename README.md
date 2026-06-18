@@ -4,7 +4,8 @@ Proyecto del curso MDS7205 (Grafos de Conocimiento, Universidad de Chile). Model
 completo de PokeAPI como un grafo de propiedades en Neo4j, lo consulta con GQL/Cypher y corre
 un ML basico sobre el.
 
-El grafo cargado tiene **131.879 nodos** y **902.000 aristas**. Lo que lo vuelve un grafo util
+El grafo base tiene **131.879 nodos** y **902.000 aristas** (la capa competitiva de Smogon, opcional,
+suma un nodo `Format` y ~6.900 aristas de uso, dejando el grafo completo en 131.880 / 908.866). Lo que lo vuelve un grafo util
 y no un CSV glorificado son tres cosas que chequeamos sobre los datos: el cuadro de tipos tiene
 ciclos de verdad (`fighting -> steel -> fairy -> fighting`, y hasta tipos fuertes contra si
 mismos como `ghost` y `dragon`); la evolucion es recursiva, porque la self-FK
@@ -67,7 +68,7 @@ Para regenerar el reporte tecnico:
 
 ```bash
 python analysis/build_notebook.py
-jupyter nbconvert --to notebook --execute --inplace analysis/reporte.ipynb
+jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=600 analysis/reporte.ipynb
 jupyter nbconvert --to html analysis/reporte.ipynb
 ```
 
@@ -114,21 +115,25 @@ Dos resultados del ML hay que leerlos con cuidado, y se explican en el reporte:
 Extension hacia el Pokemon competitivo (Smogon gen9 OU). El reporte vive en
 `analysis/reporte_competitivo.ipynb` (.pdf) e incluye:
 
-- **Consultas de teambuilding** (`pipeline/queries_competitivo.cypher`) sobre el cuadro de tipos y
-  los stats: mejores tipados defensivos, cores, vulnerabilidad a Stealth Rock, checks/counters,
-  revenge-killers, speed tiers, y una calculadora de dano en Cypher puro que coincide con el calc
-  oficial de Showdown.
+- **Consultas de teambuilding** (`pipeline/queries_competitivo.cypher`, C1-C9) sobre el cuadro de
+  tipos y los stats: mejores tipados defensivos, cores, vulnerabilidad a Stealth Rock, checks/counters,
+  revenge-killers, speed tiers, y una calculadora de daño en Cypher puro que da 208-246 para el
+  ejemplo de Charizard vs Venusaur, igual que el calc oficial de Showdown. El notebook muestra una
+  seleccion; el resto vive en el `.cypher`.
 - **Capa de meta real**: usage stats de Smogon montadas como subgrafo (`USED_IN`, `RUNS_MOVE`,
   `TEAMMATE_OF`, `CHECKED_BY`...). Se carga con `python pipeline/06_smogon.py` (baja un JSON de
   smogon.com y normaliza los nombres a los identifiers de PokeAPI).
 - **Tres modelos predictivos** evaluados de forma adversarial (`analysis/ml_competitivo.py` y
-  `analysis/ml.py`): viabilidad en OU (el grafo sube ~9 pts de AUC sobre el baseline de BST entre
-  Pokemon comparables), recomendacion de teammates (hallazgo: la complementariedad de tipos NO
-  predice el co-uso real, la co-ocurrencia si), y clustering de roles por stats. Cada modelo trae
-  control de fuga (con el label shuffleado el AUC cae a ~0.5) y se mide out-of-fold.
+  `analysis/ml.py`): viabilidad en OU (el grafo sube ~0.07 de AUC, de 0.71 a 0.77, sobre el baseline
+  de BST entre Pokemon comparables, con el delta fuera del intervalo de las semillas), recomendacion
+  de teammates (hallazgo: la complementariedad de tipos NO predice el co-uso real, la co-ocurrencia
+  si, ~0.71), y clustering de roles por stats. Cada modelo trae control de fuga (con el label
+  shuffleado el AUC cae a ~0.5) y reporta media +/- desviacion sobre varias semillas; viabilidad y
+  roles se miden out-of-fold, teammates en holdout 75/25 con la feature de vecinos comunes calculada
+  solo con train (sin fuga topologica).
 
 Para regenerarlo: cargar el grafo, correr `python pipeline/06_smogon.py`, y luego
-`python analysis/build_competitivo.py && jupyter nbconvert --to notebook --execute analysis/reporte_competitivo.ipynb`.
+`python analysis/build_competitivo.py && jupyter nbconvert --to notebook --execute --ExecutePreprocessor.timeout=600 analysis/reporte_competitivo.ipynb`.
 
 ## Datos
 

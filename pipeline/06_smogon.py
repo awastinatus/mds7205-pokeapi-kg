@@ -33,7 +33,6 @@ FORMAS = {
     "ogerpon-hearthflame": "ogerpon-hearthflame-mask",
     "ogerpon-cornerstone": "ogerpon-cornerstone-mask",
     "urshifu": "urshifu-single-strike",
-    "urshifu-rapid-strike": "urshifu-rapid-strike",
     "basculegion": "basculegion-male",
     "indeedee": "indeedee-male",
     "tauros-paldea-combat": "tauros-paldea-combat-breed",
@@ -42,7 +41,6 @@ FORMAS = {
     "maushold": "maushold-family-of-four",
     "dudunsparce": "dudunsparce-two-segment",
     "keldeo": "keldeo-ordinary",
-    "zamazenta-crowned": "zamazenta-crowned",
 }
 
 
@@ -59,8 +57,7 @@ def poke_id(name, pokes):
         return s
     if s in FORMAS and FORMAS[s] in pokes:
         return FORMAS[s]
-    # formas tipo "X-Mega", "X-Therian" que en PokeAPI van como "x-mega"/"x-therian"
-    return s if s in pokes else None
+    return None
 
 
 def main():
